@@ -22,11 +22,7 @@ data = data.drop(['Unnamed: 0'], axis = 1)
 
 data_origin = data.copy() # pour la dénormalisation dans la fonction predict_emissions
 
-pmids = data['pmid'].unique().tolist()
-
-random.seed (1)
-pmids_train = random.sample (pmids, 500)
-
+pmids_train = data[data["fer_origin_origin"] != "cat"]['pmid'].unique().tolist()
 
 # model parameters -------------------------------------------------------------------------
 cat_vars_full = [
@@ -54,7 +50,6 @@ cont_vars_full = [
 ]
 
 num_layers = 1
-nonlinearity = "relu"
 bidirectional = True
 response = "e_cum"
 hidden_size = 512 
@@ -77,60 +72,64 @@ input_size = len (cont_vars) + len (cat_vars)
 l = []
 list_predictions = []
 
-for seed in range (5):
-    random.seed (seed)
-    print (f"seed = {seed}")
+for nonlinearity in ["relu", "tanh"]:
+
+    for seed in range (5):
+
+        random.seed (seed)
+        print (f"seed = {seed}")
+        
+        torch.manual_seed(1)
+        model = AmmoniaRNN(
+            input_size = input_size, 
+            output_size = output_size, 
+            hidden_size = hidden_size, 
+            nonlinearity = nonlinearity,
+            num_layers = num_layers,
+            bidirectional = bidirectional,
+            cat_dims = cat_dims, 
+            embedding_dims = embedding_dims
+        ).to(DEVICE)
+        
+        x_train, y_train = mf.make_tensors (pmids_train, data, response, cont_vars, cat_vars, DEVICE)
+        
+        num_epochs = 3
+        learning_rate = 5e-4
+        list_out_fc1_before_relu, list_out_fc1_after_relu, list_out_fc2_before_relu, list_out_fc2_after_relu = mf.train_model (model, num_epochs, learning_rate, x_train, y_train, DEVICE)
     
-
-    torch.manual_seed(1)
-    model = AmmoniaRNN(
-        input_size = input_size, 
-        output_size = output_size, 
-        hidden_size = hidden_size, 
-        nonlinearity = nonlinearity,
-        num_layers = num_layers,
-        bidirectional = bidirectional,
-        cat_dims = cat_dims, 
-        embedding_dims = embedding_dims
-    ).to(DEVICE)
+        df_tmp = pd.concat ([
+            pd.DataFrame ({"position of h" : "fc1 before relu", "value" : list_out_fc1_before_relu, "seed": seed, "nonlinearity": nonlinearity}).reset_index(),
+            pd.DataFrame ({"position of h" : "fc1 after relu", "value" : list_out_fc1_after_relu, "seed": seed, "nonlinearity": nonlinearity}).reset_index(),
+            pd.DataFrame ({"position of h" : "fc2 before relu", "value" : list_out_fc2_before_relu, "seed": seed, "nonlinearity": nonlinearity}).reset_index(),
+            pd.DataFrame ({"position of h" : "fc2 after relu", "value" : list_out_fc2_after_relu, "seed": seed, "nonlinearity": nonlinearity}).reset_index()
+        ])
     
-    x_train, y_train = mf.make_tensors (pmids_train, data, response, cont_vars, cat_vars, DEVICE)
+        l.append (df_tmp)
     
-    num_epochs = 5
-    learning_rate = 5e-4
-    list_out_fc1_before_relu, list_out_fc1_after_relu, list_out_fc2_before_relu, list_out_fc2_after_relu = mf.train_model (model, num_epochs, learning_rate, x_train, y_train, DEVICE)
-
-    df_tmp = pd.concat ([
-        pd.DataFrame ({"position" : "sum (abs (h)) fc1 before relu", "value" : list_out_fc1_before_relu, "seed": seed}).reset_index(),
-        pd.DataFrame ({"position" : "sum (abs (h)) fc1 after relu", "value" : list_out_fc1_after_relu, "seed": seed}).reset_index(),
-        pd.DataFrame ({"position" : "sum (abs (h)) fc2 before relu", "value" : list_out_fc2_before_relu, "seed": seed}).reset_index(),
-        pd.DataFrame ({"position" : "sum (abs (h)) fc2 after relu", "value" : list_out_fc2_after_relu, "seed": seed}).reset_index()
-    ])
-
-    l.append (df_tmp)
-
-    data_predictions = mf.predict_emissions (data_origin, model, pmids_train, cont_vars, cat_vars, response, DEVICE)
-
-    data_predictions = data_predictions.loc[data_predictions.groupby(['pmid'])['ct'].idxmax()]
-
-    data_predictions = data_predictions.assign (seed = seed)
-    list_predictions.append (data_predictions)
+        data_predictions = mf.predict_emissions (data_origin, model, pmids_train, cont_vars, cat_vars, response, DEVICE)
+    
+        data_predictions = data_predictions.loc[data_predictions.groupby(['pmid'])['ct'].idxmax()]
+    
+        data_predictions = data_predictions.assign (seed = seed, nonlinearity = nonlinearity)
+        list_predictions.append (data_predictions)
 # ------------------------------------------------------------------------------------------
 
 
 # plots ------------------------------------------------------------------------------------
 df_plot1 = pd.concat (list_predictions)
 
-g = sns.FacetGrid (df_plot1, col = "seed")
+g = sns.FacetGrid (df_plot1, row = "nonlinearity", col = "seed")
 g.map_dataframe (sns.scatterplot, x = "e_cum_origin", y = "prediction_ecum")
 
 g.savefig("results/obs_vs_pred_all_variables.png", dpi=200, bbox_inches="tight")
 
 df_plot2 = pd.concat (l)
 
-g = sns.FacetGrid (df_plot2, col = "seed", hue = "position", col_wrap = 5)
+g = sns.FacetGrid (df_plot2, row = "nonlinearity", col = "seed", hue = "position of h")
 g.map_dataframe (sns.scatterplot, x = "index", y = "value")
 g.add_legend()
+g.set_xlabels("minibatch index")
+g.fig.suptitle ("sum (abs (h)) pour le premier essai du train, tout temps confondus", y = 1.02)
 
 g.savefig("results/sum_abs_h_all_variables.png", dpi=200, bbox_inches="tight")
 # ------------------------------------------------------------------------------------------
